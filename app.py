@@ -5,54 +5,72 @@ import pickle
 
 with open("best_model.pkl", "rb") as f:
     data = pickle.load(f)
-
-model = data["model"]
-name = data["name"]
-features = data["features"]
+model, features, model_name = data["model"], data["features"], data["name"]
 
 AMOUNT_MEAN, AMOUNT_STD = 88.3496, 250.120109
 TIME_MEAN, TIME_STD = 94813.8, 47488.14
 
-st.set_page_config(page_title="Fraud Detection", page_icon="💳", layout="centered")
+@st.cache_data
+def load_data():
+    return pd.read_csv(r"C:\Users\Yasee\Downloads\creditcard.csv")
+
+def build_and_predict(amount, time, v_vals):
+    amount_scaled = (amount - AMOUNT_MEAN) / AMOUNT_STD
+    time_scaled = (time - TIME_MEAN) / TIME_STD
+    row = {**v_vals,
+           "Amount_scaled": amount_scaled,
+           "Time_scaled": time_scaled,
+           "Hour": int(abs(time_scaled) * 24) % 24,
+           "Amount_per_sec": amount_scaled / (abs(time_scaled) + 1),
+           "V1_V2_interaction": v_vals["V1"] * v_vals["V2"]}
+    arr = np.array([[row[f] for f in features]])
+    pred = model.predict(arr)[0]
+    prob = model.predict_proba(arr)[0][1]
+    return int(pred), round(prob * 100, 2)
+
+st.set_page_config(page_title="Fraud Detection", page_icon="💳")
 st.title("💳 Credit Card Fraud Detection")
-st.markdown(f"**Model:** {name}")
-st.markdown("---")
+st.caption(f"Model: {model_name}")
+st.divider()
 
-amount = st.number_input("Transaction Amount (₹)", min_value=0.0, max_value=999999.0, value=100.0, step=0.01)
+tab1, tab2 = st.tabs(["🎲 Random Transaction", "✏️ Custom Input"])
 
-if st.button("🔍 Predict"):
-    df_orig = pd.read_csv(r"C:\Users\Yasee\Downloads\creditcard.csv")
-    df_orig['amount_diff'] = abs(df_orig['Amount'] - amount)
-    closest = df_orig.loc[df_orig['amount_diff'].idxmin()]
-    actual_label = int(closest['Class'])
-    actual_amount = closest['Amount']
+with tab1:
+    col1, col2 = st.columns(2)
+    if col1.button("🎲 Pick Random Transaction"):
+        st.session_state.row = load_data().sample(1).iloc[0]
+    if col2.button("🚨 Pick Random Fraud"):
+        df = load_data()
+        st.session_state.row = df[df["Class"] == 1].sample(1).iloc[0]
 
-    raw = {f"V{i}": closest[f"V{i}"] for i in range(1, 29)}
-    amount_scaled = (closest['Amount'] - AMOUNT_MEAN) / AMOUNT_STD
-    time_scaled = (closest['Time'] - TIME_MEAN) / TIME_STD
-    hour = int(abs(time_scaled) * 24) % 24
-    amount_per_sec = amount_scaled / (abs(time_scaled) + 1)
-    v1_v2_interaction = raw['V1'] * raw['V2']
+    if "row" in st.session_state:
+        row = st.session_state.row
+        v_vals = {f"V{i}": row[f"V{i}"] for i in range(1, 29)}
+        pred, prob = build_and_predict(row["Amount"], row["Time"], v_vals)
 
-    input_dict = {f"V{i}": raw[f"V{i}"] for i in range(1, 29)}
-    input_dict.update({"Amount_scaled": amount_scaled, "Time_scaled": time_scaled,
-                       "Hour": hour, "Amount_per_sec": amount_per_sec,
-                       "V1_V2_interaction": v1_v2_interaction})
-    input_array = np.array([[input_dict[f] for f in features]])
+        st.metric("Amount", f"₹{row['Amount']:.2f}")
+        st.metric("Fraud Probability", f"{prob}%")
 
-    prediction = model.predict(input_array)[0]
-    probability = model.predict_proba(input_array)[0][1]
+        if pred == 1:
+            st.error("🚨 FRAUDULENT Transaction")
+        else:
+            st.success("✅ LEGITIMATE Transaction")
 
-    st.markdown("---")
-    if prediction == 1:
-        st.error("🚨 FRAUDULENT Transaction Detected!")
-    else:
-        st.success("✅ Legitimate Transaction")
+        actual = int(row["Class"])
+        st.info(f"Actual label: {'Fraud 🚨' if actual == 1 else 'Legit ✅'} — {'✔️ Correct' if pred == actual else '❌ Wrong'}")
 
-    st.metric("Fraud Probability", f"{probability*100:.2f}%")
-    st.caption(f"📌 Closest match in dataset: ₹{actual_amount:.2f} — Actual: {'Fraud 🚨' if actual_label == 1 else 'Legit ✅'}")
+with tab2:
+    amount = st.number_input("Transaction Amount (₹)", min_value=0.01, value=150.0)
+    hour = st.slider("Hour of Day", 0, 23, 14)
 
-    if prediction == actual_label:
-        st.info("✔️ Prediction matches actual label")
-    else:
-        st.warning("⚠️ Prediction does not match actual label")
+    if st.button("🔍 Predict"):
+        v_vals = {f"V{i}": 0.0 for i in range(1, 29)}  # neutral PCA values
+        pred, prob = build_and_predict(amount, float(hour * 3600), v_vals)
+
+        st.metric("Fraud Probability", f"{prob}%")
+        if pred == 1:
+            st.error("🚨 FRAUDULENT Transaction")
+        else:
+            st.success("✅ LEGITIMATE Transaction")
+
+        st.caption("Note: V1–V28 are anonymized bank features. Without real data, they default to zero (neutral average).")
